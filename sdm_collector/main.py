@@ -130,27 +130,16 @@ def collect(master, redis, emoncms=dict(), slaves=SLAVES, attempts=ATTEMPTS, dum
     slave_list = []
     for slave_id in slaves:
         slave = Sdm120(master=master, id=slave_id)
-        remaining_attempts = attempts
-        data = dict()
-        while remaining_attempts:
-            if verbosity >= 1:
-                print('Remaining attempts: %d' % remaining_attempts)
-            remaining_attempts -= 1
-            try:
-                data = slave.get_data()
-            except (modbus_tk.modbus.ModbusError, modbus_tk.modbus.ModbusInvalidResponseError):
-                pass
+        slave.read_data(attempts=attempts, verbosity=verbosity)
         slave_list.append(slave)
-        if data:
+        if slave.read_success:
             info['read_successes'] += 1
             sdm_successes.labels(slave.id).inc()
         else:
             info['read_failures'] += 1
             sdm_failures.labels(slave.id).inc()
         if dump_data:
-            print('--- Slave %d' % slave_id)
-            for name, address in slave.REGISTERS:
-                print(name, data.get(name, ''))
+            print(slave)
         # Emoncms
         emoncsm_post(emoncms=emoncms, slave=slave, verbosity=verbosity)
         # Redis
