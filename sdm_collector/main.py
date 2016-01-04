@@ -26,18 +26,36 @@ EMONCMS_OFFSET = 0
 EMONCMS_TIMEOUT = 3
 
 sdm_elapsed_seconds = Gauge('sdm_elapsed_seconds', 'Collecting time in seconds')
-sdm_successes = Counter('sdm_successes', 'Read successes', ['id'])
-sdm_failures = Counter('sdm_failures', 'Read failures', ['id'])
-sdm_voltage_volts = Gauge('sdm_voltage_volts', 'Voltage volts', ['id'])
-sdm_current_amps = Gauge('sdm_current_amps', 'Current in ampere', ['id'])
-sdm_power_watts = Gauge('sdm_power_watts', 'Power in watts', ['id'])
-sdm_active_apparent_power_va = Gauge('sdm_active_apparent_power_va', 'Active apparent power in VA', ['id'])
-sdm_reactive_apparent_power_var = Gauge('sdm_reactive_apparent_power_var', 'Reactive apparent power in VAr', ['id'])
-sdm_power_factor = Gauge('sdm_power_factor', 'Power factor (cosfi)', ['id'])
-sdm_frequency_hz = Gauge('sdm_frequency_hz', 'Frequency in Hertz', ['id'])
-sdm_import_active_energy_wh = Counter('sdm_import_active_energy_wh', 'Import active energy in watthours', ['id'])
-sdm_export_active_energy_wh = Counter('sdm_export_active_energy_wh', 'Export active energy in watthours', ['id'])
-sdm_total_active_energy_wh = Counter('sdm_total_active_energy_wh', 'Total active energy in watthours', ['id'])
+sdm_successes = Counter('sdm_successes', 'Read successes', ['id', 'name'])
+sdm_failures = Counter('sdm_failures', 'Read failures', ['id', 'name'])
+sdm_voltage_volts = Gauge('sdm_voltage_volts', 'Voltage volts', ['id', 'name'])
+sdm_current_amps = Gauge('sdm_current_amps', 'Current in ampere', ['id', 'name'])
+sdm_power_watts = Gauge('sdm_power_watts', 'Power in watts', ['id', 'name'])
+sdm_active_apparent_power_va = Gauge('sdm_active_apparent_power_va', 'Active apparent power in VA', ['id', 'name'])
+sdm_reactive_apparent_power_var = Gauge('sdm_reactive_apparent_power_var', 'Reactive apparent power in VAr', ['id', 'name'])
+sdm_power_factor = Gauge('sdm_power_factor', 'Power factor (cosfi)', ['id', 'name'])
+sdm_frequency_hz = Gauge('sdm_frequency_hz', 'Frequency in Hertz', ['id', 'name'])
+sdm_import_active_energy_wh = Counter('sdm_import_active_energy_wh', 'Import active energy in watthours', ['id', 'name'])
+sdm_export_active_energy_wh = Counter('sdm_export_active_energy_wh', 'Export active energy in watthours', ['id', 'name'])
+sdm_total_active_energy_wh = Counter('sdm_total_active_energy_wh', 'Total active energy in watthours', ['id', 'name'])
+
+
+def parse_slaves(slave_list):
+    slaves = []
+    slave = dict()
+    for text in slave_list:
+        if text.isdigit():
+            if slave:
+                slaves.append(slave)
+            slave = dict(id=int(text), name='')
+        else:
+            if slave:
+                slave['name'] = text
+                slaves.append(slave)
+                slave = dict()
+    if slave:
+        slaves.append(slave)
+    return slaves
 
 
 def get_master(device=DEVICE, baudrate=BAUDRATE, timeout=TIMEOUT, verbosity=0):
@@ -89,6 +107,7 @@ def redis_save_slaves(redis=None, slaves=[]):
 def redis_save_slave(redis=None, slave=None):
     key = '%s:%d' % (redis.var_name_prefix, slave.id)
     pipe = redis.pipeline()
+    pipe.hset(key, 'name', slave.name)
     if slave.data:
         for k, v in slave.data.iteritems():
             pipe.hset(key, k, v)
@@ -110,8 +129,9 @@ def redis_save_info(redis=None, info=dict()):
 
 
 def set_prometheus_metrics(slave):
-    labels = dict(id=slave.id)
-    if slave.data:
+    labels = dict(id=slave.id, name=slave.name)
+    if slave.read_success:
+        sdm_successes.labels(labels).inc()
         sdm_voltage_volts.labels(labels).set(slave.data['voltage_volts'])
         sdm_current_amps.labels(labels).set(slave.data['current_amps'])
         sdm_power_watts.labels(labels).set(slave.data['power_watts'])
@@ -122,22 +142,22 @@ def set_prometheus_metrics(slave):
         sdm_import_active_energy_wh.labels(labels)._value._value = slave.data['import_active_energy_wh']
         sdm_export_active_energy_wh.labels(labels)._value._value = slave.data['export_active_energy_wh']
         sdm_total_active_energy_wh.labels(labels)._value._value = slave.data['total_active_energy_wh']
+    else:
+        sdm_failures.labels(labels).inc(slave.read_failures)
 
 
-def collect(master, redis, emoncms=dict(), slaves=SLAVES, attempts=ATTEMPTS, dump_data=False, verbosity=0):
+def collect(master, redis, emoncms=dict(), slaves=[], attempts=ATTEMPTS, dump_data=False, verbosity=0):
     info = dict(read_successes=0, read_failures=0)
     start = datetime.now()
     slave_list = []
-    for slave_id in slaves:
-        slave = Sdm120(master=master, id=slave_id)
+    for s in slaves:
+        slave = Sdm120(master=master, id=s['id'], name=s['name'])
         slave.read_data(attempts=attempts, verbosity=verbosity)
         slave_list.append(slave)
         if slave.read_success:
             info['read_successes'] += 1
-            sdm_successes.labels(slave.id).inc()
         else:
             info['read_failures'] += 1
-            sdm_failures.labels(slave.id).inc()
         if dump_data:
             print(slave)
         # Emoncms
@@ -153,17 +173,17 @@ def collect(master, redis, emoncms=dict(), slaves=SLAVES, attempts=ATTEMPTS, dum
         redis_save_info(redis=redis, info=info)
     # Prometheus
     sdm_elapsed_seconds.set(info['elapsed_seconds'])
-    sdm_successes.labels('').inc(info['read_successes'])
-    sdm_failures.labels('').inc(info['read_failures'])
+    sdm_successes.labels('', '').inc(info['read_successes'])
+    sdm_failures.labels('', '').inc(info['read_failures'])
 
 
 def main():
     parser = argparse.ArgumentParser(description='Eastron SDM120 Modbus collector.')
     parser.add_argument('--device', metavar='DEV', type=str, default=DEVICE,
                         help='Serial device (default: %s)' % DEVICE)
-    parser.add_argument('--slaves', metavar='ID', type=int, nargs='+',
+    parser.add_argument('--slaves', metavar='ID', type=str, nargs='+',
                         default=SLAVES,
-                        help='Slave id list (default: %s)' % SLAVES)
+                        help='Slave list (default: %s)' % SLAVES)
     parser.add_argument('--baudrate', metavar='BPS', type=int,
                         choices=BAUDRATE_CHOICES, default=BAUDRATE,
                         help='Baudrate (default: %s)' % BAUDRATE)
@@ -201,20 +221,22 @@ def main():
                         help='Prometheus metrics port')
 
     args = parser.parse_args()
+    slaves = parse_slaves(args.slaves)
     if args.verbosity >= 1:
         print(args)
+        print(slaves)
 
     master = get_master(device=args.device, baudrate=args.baudrate, timeout=args.timeout, verbosity=args.verbosity)
     redis = None
-    emoncms = dict(url=args.emoncms_url, offset=args.emoncms_offset, key=args.emoncms_apikey, timeout=args.emoncms_timeout)
     if args.redis_host:
         redis = StrictRedis(host=args.redis_host, port=args.redis_port, db=args.redis_db)
         redis.var_name_prefix = args.redis_prefix
         redis_save_slaves(redis=redis, slaves=args.slaves)
+    emoncms = dict(url=args.emoncms_url, offset=args.emoncms_offset, key=args.emoncms_apikey, timeout=args.emoncms_timeout)
     if args.prometheus_port:
         start_http_server(args.prometheus_port)
     while True:
-        collect(master, redis, emoncms=emoncms, slaves=args.slaves, attempts=args.attempts, dump_data=args.dump_data, verbosity=args.verbosity)
+        collect(master, redis, emoncms=emoncms, slaves=slaves, attempts=args.attempts, dump_data=args.dump_data, verbosity=args.verbosity)
         if args.one_shot:
             exit(0)
         time.sleep(args.delay)
