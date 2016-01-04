@@ -1,7 +1,10 @@
 import argparse
+import json
 import serial
 import time
 import modbus_tk
+import requests
+from copy import copy
 from datetime import datetime
 from modbus_tk import modbus_rtu
 from redis import StrictRedis
@@ -17,6 +20,9 @@ DELAY = 0
 REDIS_PORT = 6379
 REDIS_DB = 0
 REDIS_PREFIX = 'sdm'
+EMONCMS_URL = 'http://emoncms.org'
+EMONCMS_OFFSET = 0
+EMONCMS_TIMEOUT = 3
 
 
 def get_master(device=DEVICE, baudrate=BAUDRATE, timeout=TIMEOUT, verbosity=0):
@@ -36,6 +42,24 @@ def get_master(device=DEVICE, baudrate=BAUDRATE, timeout=TIMEOUT, verbosity=0):
     if verbosity >= 2:
         master.set_verbose(True)
     return master
+
+
+def emoncsm_post(emoncms=dict(), slave=None, verbosity=0):
+    if emoncms.get('key', None):
+        url = '%s/input/post.json' % emoncms['url']
+        if slave.data:
+            data = copy(slave.data)
+            data['import_active_energy_kwh'] = data['import_active_energy_wh'] / 1000
+            data['export_active_energy_kwh'] = data['export_active_energy_wh'] / 1000
+            data['total_active_energy_kwh'] = data['total_active_energy_wh'] / 1000
+            payload = dict(
+                apikey=emoncms['key'],
+                node=slave.id,
+                json=json.dumps(data)
+            )
+            response = requests.get(url, params=payload, timeout=emoncms['timeout'])
+            if verbosity >= 1:
+                print 'Slave %d - Emoncms status code: %d' % (slave.id, response.status_code)
 
 
 def redis_save_slaves(redis=None, slaves=[]):
@@ -70,9 +94,10 @@ def redis_save_info(redis=None, info=dict()):
     pipe.execute()
 
 
-def collect(master, redis, slaves=SLAVES, attempts=ATTEMPTS, dump_data=False, verbosity=0):
+def collect(master, redis, emoncms=dict(), slaves=SLAVES, attempts=ATTEMPTS, dump_data=False, verbosity=0):
     info = dict(read_successes=0, read_failures=0)
     start = datetime.now()
+    slave_list = []
     for slave_id in slaves:
         slave = Sdm120(master=master, id=slave_id)
         remaining_attempts = attempts
@@ -85,6 +110,7 @@ def collect(master, redis, slaves=SLAVES, attempts=ATTEMPTS, dump_data=False, ve
                 data = slave.get_data()
             except (modbus_tk.modbus.ModbusError, modbus_tk.modbus.ModbusInvalidResponseError):
                 pass
+        slave_list.append(slave)
         if data:
             info['read_successes'] += 1
         else:
@@ -93,6 +119,9 @@ def collect(master, redis, slaves=SLAVES, attempts=ATTEMPTS, dump_data=False, ve
             print('--- Slave %d' % slave_id)
             for name, address in slave.REGISTERS:
                 print name, data.get(name, '')
+        # Emoncms
+        emoncsm_post(emoncms=emoncms, slave=slave, verbosity=verbosity)
+        # Redis
         if redis:
             redis_save_slave(redis=redis, slave=slave)
     info['elapsed_seconds'] = (datetime.now() - start).total_seconds()
@@ -120,6 +149,9 @@ def main():
                         help='Print collected data on standard output')
     parser.add_argument('--one-shot', action='store_true',
                         help='Collect data one time and exit')
+    parser.add_argument("-v", "--verbosity", action="count",
+                        help="Increase output verbosity")
+    # Redis
     parser.add_argument('--redis-host', metavar='HOST', type=str, help='Redis host')
     parser.add_argument('--redis-port', metavar='PORT', type=int, default=REDIS_PORT,
                         help='Redis port (default: %d)' % REDIS_PORT)
@@ -127,8 +159,15 @@ def main():
                         help='Redis db (default: %d)' % REDIS_DB)
     parser.add_argument('--redis-prefix', metavar='PRFX', type=str, default=REDIS_PREFIX,
                         help='Redis prefix (default: %s)' % REDIS_PREFIX)
-    parser.add_argument("-v", "--verbosity", action="count",
-                        help="Increase output verbosity")
+    # Emoncms
+    parser.add_argument('--emoncms-url', metavar='URL', type=str, default=EMONCMS_URL,
+                        help='Emoncms url (default: %s' % EMONCMS_URL)
+    parser.add_argument('--emoncms-offset', metavar='OFFSET', type=int, default=EMONCMS_OFFSET,
+                        help='Emoncms time offset (default: %d' % EMONCMS_OFFSET)
+    parser.add_argument('--emoncms-apikey', metavar='KEY', type=str,
+                        help='Emoncms api write key')
+    parser.add_argument('--emoncms-timeout', metavar='SECONDS', type=float,
+                        help='Emoncms request timeout (default: %d' % EMONCMS_TIMEOUT)
 
     args = parser.parse_args()
     if args.verbosity >= 1:
@@ -136,12 +175,13 @@ def main():
 
     master = get_master(device=args.device, baudrate=args.baudrate, timeout=args.timeout, verbosity=args.verbosity)
     redis = None
+    emoncms = dict(url=args.emoncms_url, offset=args.emoncms_offset, key=args.emoncms_apikey, timeout=args.emoncms_timeout)
     if args.redis_host:
         redis = StrictRedis(host=args.redis_host, port=args.redis_port, db=args.redis_db)
         redis.var_name_prefix = args.redis_prefix
         redis_save_slaves(redis=redis, slaves=args.slaves)
     while True:
-        collect(master, redis, slaves=args.slaves, attempts=args.attempts, dump_data=args.dump_data, verbosity=args.verbosity)
+        collect(master, redis, emoncms=emoncms, slaves=args.slaves, attempts=args.attempts, dump_data=args.dump_data, verbosity=args.verbosity)
         if args.one_shot:
             exit(0)
         time.sleep(args.delay)
