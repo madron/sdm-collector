@@ -7,6 +7,7 @@ import requests
 from copy import copy
 from datetime import datetime
 from modbus_tk import modbus_rtu
+from prometheus_client import start_http_server, Counter, Gauge
 from redis import StrictRedis
 from eastron import Sdm120
 
@@ -23,6 +24,20 @@ REDIS_PREFIX = 'sdm'
 EMONCMS_URL = 'http://emoncms.org'
 EMONCMS_OFFSET = 0
 EMONCMS_TIMEOUT = 3
+
+sdm_elapsed_seconds = Gauge('sdm_elapsed_seconds', 'Collecting time in seconds')
+sdm_successes = Counter('sdm_successes', 'Read successes', ['id'])
+sdm_failures = Counter('sdm_failures', 'Read failures', ['id'])
+sdm_voltage_volts = Gauge('sdm_voltage_volts', 'Voltage volts', ['id'])
+sdm_current_amps = Gauge('sdm_current_amps', 'Current in ampere', ['id'])
+sdm_power_watts = Gauge('sdm_power_watts', 'Power in watts', ['id'])
+sdm_active_apparent_power_va = Gauge('sdm_active_apparent_power_va', 'Active apparent power in VA', ['id'])
+sdm_reactive_apparent_power_var = Gauge('sdm_reactive_apparent_power_var', 'Reactive apparent power in VAr', ['id'])
+sdm_power_factor = Gauge('sdm_power_factor', 'Power factor (cosfi)', ['id'])
+sdm_frequency_hz = Gauge('sdm_frequency_hz', 'Frequency in Hertz', ['id'])
+sdm_import_active_energy_wh = Counter('sdm_import_active_energy_wh', 'Import active energy in watthours', ['id'])
+sdm_export_active_energy_wh = Counter('sdm_export_active_energy_wh', 'Export active energy in watthours', ['id'])
+sdm_total_active_energy_wh = Counter('sdm_total_active_energy_wh', 'Total active energy in watthours', ['id'])
 
 
 def get_master(device=DEVICE, baudrate=BAUDRATE, timeout=TIMEOUT, verbosity=0):
@@ -59,7 +74,7 @@ def emoncsm_post(emoncms=dict(), slave=None, verbosity=0):
             )
             response = requests.get(url, params=payload, timeout=emoncms['timeout'])
             if verbosity >= 1:
-                print 'Slave %d - Emoncms status code: %d' % (slave.id, response.status_code)
+                print('Slave %d - Emoncms status code: %d' % (slave.id, response.status_code))
 
 
 def redis_save_slaves(redis=None, slaves=[]):
@@ -94,6 +109,21 @@ def redis_save_info(redis=None, info=dict()):
     pipe.execute()
 
 
+def set_prometheus_metrics(slave):
+    labels = dict(id=slave.id)
+    if slave.data:
+        sdm_voltage_volts.labels(labels).set(slave.data['voltage_volts'])
+        sdm_current_amps.labels(labels).set(slave.data['current_amps'])
+        sdm_power_watts.labels(labels).set(slave.data['power_watts'])
+        sdm_active_apparent_power_va.labels(labels).set(slave.data['active_apparent_power_va'])
+        sdm_reactive_apparent_power_var.labels(labels).set(slave.data['reactive_apparent_power_var'])
+        sdm_power_factor.labels(labels).set(slave.data['power_factor'])
+        sdm_frequency_hz.labels(labels).set(slave.data['frequency_hz'])
+        sdm_import_active_energy_wh.labels(labels)._value._value = slave.data['import_active_energy_wh']
+        sdm_export_active_energy_wh.labels(labels)._value._value = slave.data['export_active_energy_wh']
+        sdm_total_active_energy_wh.labels(labels)._value._value = slave.data['total_active_energy_wh']
+
+
 def collect(master, redis, emoncms=dict(), slaves=SLAVES, attempts=ATTEMPTS, dump_data=False, verbosity=0):
     info = dict(read_successes=0, read_failures=0)
     start = datetime.now()
@@ -113,20 +143,29 @@ def collect(master, redis, emoncms=dict(), slaves=SLAVES, attempts=ATTEMPTS, dum
         slave_list.append(slave)
         if data:
             info['read_successes'] += 1
+            sdm_successes.labels(slave.id).inc()
         else:
             info['read_failures'] += 1
+            sdm_failures.labels(slave.id).inc()
         if dump_data:
             print('--- Slave %d' % slave_id)
             for name, address in slave.REGISTERS:
-                print name, data.get(name, '')
+                print(name, data.get(name, ''))
         # Emoncms
         emoncsm_post(emoncms=emoncms, slave=slave, verbosity=verbosity)
         # Redis
         if redis:
             redis_save_slave(redis=redis, slave=slave)
+        # Prometheus
+        set_prometheus_metrics(slave)
     info['elapsed_seconds'] = (datetime.now() - start).total_seconds()
+    # Redis
     if redis:
         redis_save_info(redis=redis, info=info)
+    # Prometheus
+    sdm_elapsed_seconds.set(info['elapsed_seconds'])
+    sdm_successes.labels('').inc(info['read_successes'])
+    sdm_failures.labels('').inc(info['read_failures'])
 
 
 def main():
@@ -168,6 +207,9 @@ def main():
                         help='Emoncms api write key')
     parser.add_argument('--emoncms-timeout', metavar='SECONDS', type=float,
                         help='Emoncms request timeout (default: %d' % EMONCMS_TIMEOUT)
+    # Prometheus
+    parser.add_argument('--prometheus-port', metavar='PORT', type=int,
+                        help='Prometheus metrics port')
 
     args = parser.parse_args()
     if args.verbosity >= 1:
@@ -180,6 +222,8 @@ def main():
         redis = StrictRedis(host=args.redis_host, port=args.redis_port, db=args.redis_db)
         redis.var_name_prefix = args.redis_prefix
         redis_save_slaves(redis=redis, slaves=args.slaves)
+    if args.prometheus_port:
+        start_http_server(args.prometheus_port)
     while True:
         collect(master, redis, emoncms=emoncms, slaves=args.slaves, attempts=args.attempts, dump_data=args.dump_data, verbosity=args.verbosity)
         if args.one_shot:
