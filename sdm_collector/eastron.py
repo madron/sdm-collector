@@ -18,6 +18,7 @@ class Sdm120(object):
     def __init__(self, master=None, id=1):
         self.master = master
         self.id = id
+        self.data = dict()
 
     def get_data(self):
         registers = []
@@ -39,10 +40,10 @@ class Sdm120(object):
         # for i, value in enumerate(registers):
         #     if value is not None:
         #         print '%s - %s' % (hex(i * 2), value)
-        data = dict()
+        self.data = dict()
         for name, address in self.REGISTERS:
-            data[name] = registers[address / 2]
-        data['import_active_energy_wh'] = data['import_active_energy_wh'] * 1000
-        data['export_active_energy_wh'] = data['export_active_energy_wh'] * 1000
-        data['total_active_energy_wh'] = data['total_active_energy_wh'] * 1000
-        return data
+            self.data[name] = registers[address / 2]
+        self.data['import_active_energy_wh'] = self.data['import_active_energy_wh'] * 1000
+        self.data['export_active_energy_wh'] = self.data['export_active_energy_wh'] * 1000
+        self.data['total_active_energy_wh'] = self.data['total_active_energy_wh'] * 1000
+        return self.data

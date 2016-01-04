@@ -1,11 +1,10 @@
-#!/usr/bin/env python
-
 import argparse
-import os
 import serial
 import time
 import modbus_tk
+from datetime import datetime
 from modbus_tk import modbus_rtu
+from redis import StrictRedis
 from eastron import Sdm120
 
 DEVICE = '/dev/ttyUSB0'
@@ -15,16 +14,9 @@ BAUDRATE_CHOICES = (1200, 2400, 4800, 9600)
 TIMEOUT = 1
 ATTEMPTS = 1
 DELAY = 0
-
-
-def loop(master, n=1):
-    slave = Sdm120(master=master, slave=1)
-    for i in range(n):
-        data = slave.get_data()
-        os.system('clear')
-        print i
-        for name, address in slave.REGISTERS:
-            print name, data[name]
+REDIS_PORT = 6379
+REDIS_DB = 0
+REDIS_PREFIX = 'sdm'
 
 
 def get_master(device=DEVICE, baudrate=BAUDRATE, timeout=TIMEOUT, verbosity=0):
@@ -46,7 +38,41 @@ def get_master(device=DEVICE, baudrate=BAUDRATE, timeout=TIMEOUT, verbosity=0):
     return master
 
 
-def collect(master, slaves=SLAVES, attempts=ATTEMPTS, dump_data=False, verbosity=0):
+def redis_save_slaves(redis=None, slaves=[]):
+    key = '%s:slaves' % redis.var_name_prefix
+    pipe = redis.pipeline()
+    pipe.delete(key)
+    for slave_id in slaves:
+        pipe.rpush(key, slave_id)
+    pipe.execute()
+
+
+def redis_save_slave(redis=None, slave=None):
+    key = '%s:%d' % (redis.var_name_prefix, slave.id)
+    pipe = redis.pipeline()
+    if slave.data:
+        for k, v in slave.data.iteritems():
+            pipe.hset(key, k, v)
+        pipe.hincrby(key, 'read_successes', 1)
+        pipe.hincrby(key, 'read_failures', 0)
+    else:
+        pipe.hincrby(key, 'read_successes', 0)
+        pipe.hincrby(key, 'read_failures', 1)
+    pipe.execute()
+
+
+def redis_save_info(redis=None, info=dict()):
+    key = '%s:info' % redis.var_name_prefix
+    pipe = redis.pipeline()
+    pipe.hset(key, 'elapsed_seconds', info['elapsed_seconds'])
+    pipe.hincrby(key, 'read_successes', info['read_successes'])
+    pipe.hincrby(key, 'read_failures', info['read_failures'])
+    pipe.execute()
+
+
+def collect(master, redis, slaves=SLAVES, attempts=ATTEMPTS, dump_data=False, verbosity=0):
+    info = dict(read_successes=0, read_failures=0)
+    start = datetime.now()
     for slave_id in slaves:
         slave = Sdm120(master=master, id=slave_id)
         remaining_attempts = attempts
@@ -59,10 +85,19 @@ def collect(master, slaves=SLAVES, attempts=ATTEMPTS, dump_data=False, verbosity
                 data = slave.get_data()
             except (modbus_tk.modbus.ModbusError, modbus_tk.modbus.ModbusInvalidResponseError):
                 pass
+        if data:
+            info['read_successes'] += 1
+        else:
+            info['read_failures'] += 1
         if dump_data:
             print('--- Slave %d' % slave_id)
             for name, address in slave.REGISTERS:
                 print name, data.get(name, '')
+        if redis:
+            redis_save_slave(redis=redis, slave=slave)
+    info['elapsed_seconds'] = (datetime.now() - start).total_seconds()
+    if redis:
+        redis_save_info(redis=redis, info=info)
 
 
 def main():
@@ -85,6 +120,13 @@ def main():
                         help='Print collected data on standard output')
     parser.add_argument('--one-shot', action='store_true',
                         help='Collect data one time and exit')
+    parser.add_argument('--redis-host', metavar='HOST', type=str, help='Redis host')
+    parser.add_argument('--redis-port', metavar='PORT', type=int, default=REDIS_PORT,
+                        help='Redis port (default: %d)' % REDIS_PORT)
+    parser.add_argument('--redis-db', metavar='DB', type=int, default=REDIS_DB,
+                        help='Redis db (default: %d)' % REDIS_DB)
+    parser.add_argument('--redis-prefix', metavar='PRFX', type=str, default=REDIS_PREFIX,
+                        help='Redis prefix (default: %s)' % REDIS_PREFIX)
     parser.add_argument("-v", "--verbosity", action="count",
                         help="Increase output verbosity")
 
@@ -93,8 +135,13 @@ def main():
         print(args)
 
     master = get_master(device=args.device, baudrate=args.baudrate, timeout=args.timeout, verbosity=args.verbosity)
+    redis = None
+    if args.redis_host:
+        redis = StrictRedis(host=args.redis_host, port=args.redis_port, db=args.redis_db)
+        redis.var_name_prefix = args.redis_prefix
+        redis_save_slaves(redis=redis, slaves=args.slaves)
     while True:
-        collect(master, slaves=args.slaves, attempts=args.attempts, dump_data=args.dump_data, verbosity=args.verbosity)
+        collect(master, redis, slaves=args.slaves, attempts=args.attempts, dump_data=args.dump_data, verbosity=args.verbosity)
         if args.one_shot:
             exit(0)
         time.sleep(args.delay)
