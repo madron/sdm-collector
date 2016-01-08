@@ -12,7 +12,7 @@ with open(os.path.join(here, 'README.rst'), encoding='utf-8') as f:
 
 setup(
     name="sdm-collector",
-    version="0.0.1",
+    version="1.0.1",
     description='Eastron SDM120 Modbus collector',
     long_description=long_description,
 
@@ -23,7 +23,7 @@ setup(
     license='MIT',
     # See https://pypi.python.org/pypi?%3Aaction=list_classifiers
     classifiers=[
-        'Development Status :: 3 - Alpha',
+        'Development Status :: 5 - Production/Stable',
         'Environment :: Console',
         'Intended Audience :: System Administrators',
         'Topic :: Scientific/Engineering :: Information Analysis',

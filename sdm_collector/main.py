@@ -12,7 +12,7 @@ from redis import StrictRedis
 from eastron import Sdm120
 
 DEVICE = '/dev/ttyUSB0'
-SLAVES = [1]
+SLAVES = ['1']
 BAUDRATE = 2400
 BAUDRATE_CHOICES = (1200, 2400, 4800, 9600)
 TIMEOUT = 1
