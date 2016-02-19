@@ -90,9 +90,12 @@ def emoncsm_post(emoncms=dict(), slave=None, verbosity=0):
                 node=slave.id,
                 json=json.dumps(data)
             )
-            response = requests.get(url, params=payload, timeout=emoncms['timeout'])
-            if verbosity >= 1:
-                print('Slave %d - Emoncms status code: %d' % (slave.id, response.status_code))
+            try:
+                response = requests.get(url, params=payload, timeout=emoncms['timeout'])
+                if verbosity >= 1:
+                    print('Slave %d - Emoncms status code: %d' % (slave.id, response.status_code))
+            except requests.exceptions.Timeout, e:
+                print e
 
 
 def redis_save_slaves(redis=None, slaves=[]):
