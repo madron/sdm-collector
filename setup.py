@@ -12,7 +12,7 @@ with open(os.path.join(here, 'README.rst'), encoding='utf-8') as f:
 
 setup(
     name="sdm-collector",
-    version="1.0.2",
+    version="1.0.3",
     description='Eastron SDM120 Modbus collector',
     long_description=long_description,
 

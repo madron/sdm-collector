@@ -134,19 +134,19 @@ def redis_save_info(redis=None, info=dict()):
 def set_prometheus_metrics(slave):
     labels = dict(id=slave.id, name=slave.name)
     if slave.read_success:
-        sdm_successes.labels(labels).inc()
-        sdm_voltage_volts.labels(labels).set(slave.data['voltage_volts'])
-        sdm_current_amps.labels(labels).set(slave.data['current_amps'])
-        sdm_power_watts.labels(labels).set(slave.data['power_watts'])
-        sdm_active_apparent_power_va.labels(labels).set(slave.data['active_apparent_power_va'])
-        sdm_reactive_apparent_power_var.labels(labels).set(slave.data['reactive_apparent_power_var'])
-        sdm_power_factor.labels(labels).set(slave.data['power_factor'])
-        sdm_frequency_hz.labels(labels).set(slave.data['frequency_hz'])
-        sdm_import_active_energy_wh.labels(labels)._value._value = slave.data['import_active_energy_wh']
-        sdm_export_active_energy_wh.labels(labels)._value._value = slave.data['export_active_energy_wh']
-        sdm_total_active_energy_wh.labels(labels)._value._value = slave.data['total_active_energy_wh']
+        sdm_successes.labels(**labels).inc()
+        sdm_voltage_volts.labels(**labels).set(slave.data['voltage_volts'])
+        sdm_current_amps.labels(**labels).set(slave.data['current_amps'])
+        sdm_power_watts.labels(**labels).set(slave.data['power_watts'])
+        sdm_active_apparent_power_va.labels(**labels).set(slave.data['active_apparent_power_va'])
+        sdm_reactive_apparent_power_var.labels(**labels).set(slave.data['reactive_apparent_power_var'])
+        sdm_power_factor.labels(**labels).set(slave.data['power_factor'])
+        sdm_frequency_hz.labels(**labels).set(slave.data['frequency_hz'])
+        sdm_import_active_energy_wh.labels(**labels)._value._value = slave.data['import_active_energy_wh']
+        sdm_export_active_energy_wh.labels(**labels)._value._value = slave.data['export_active_energy_wh']
+        sdm_total_active_energy_wh.labels(**labels)._value._value = slave.data['total_active_energy_wh']
     else:
-        sdm_failures.labels(labels).inc(slave.read_failures)
+        sdm_failures.labels(**labels).inc(slave.read_failures)
 
 
 def collect(master, redis, emoncms=dict(), slaves=[], attempts=ATTEMPTS, dump_data=False, verbosity=0):
